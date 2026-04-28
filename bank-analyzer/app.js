@@ -2,15 +2,16 @@
 // and aggregates per month / category. Runs entirely in the browser.
 
 // ---------- Categorisatie regels ----------
-// Elke regel: { category, match: [strings of regexes], excluded? }
-// Match wordt gedaan tegen tegenpartij + omschrijving + adres + referentie + betaalwijze (lowercase).
+// Elke regel: { category, match: [strings of regexes], excluded?, scope? }
+// Standaard wordt gematcht tegen tegenpartij + omschrijving + adres + referentie + betaalwijze.
+// Met scope: "counterparty" wordt alleen de Tegenrekeninghouder-kolom gebruikt.
 // Eerste match wint, daarom specifiekere regels eerst.
 // excluded:true = persoonlijke onttrekking / intern betaalverkeer; telt NIET mee in
 // inkomsten/uitgaven/netto/per maand/per categorie. Wordt apart getoond.
 const RULES = [
-  // --- Uitgesloten van totalen (privé / intern) ---
-  { category: "Privé - D Bouma",         excluded: true, match: [/\bd\.?\s*bouma\b/] },
-  { category: "Privé - Sentis Psychologen", excluded: true, match: [/sentis\s*psychologen/] },
+  // --- Uitgesloten van totalen (privé / intern) - matchen alleen op Tegenrekeninghouder ---
+  { category: "Privé - D Bouma",            excluded: true, scope: "counterparty", match: [/\bbouma\b/] },
+  { category: "Privé - Sentis Psychologen", excluded: true, scope: "counterparty", match: [/sentis\s*psychologen/] },
 
   // --- Reguliere categorieen ---
   { category: "Salaris",       match: [/salaris/, /loon/, /payroll/] },
@@ -272,13 +273,14 @@ function normalizeRow(row) {
   const dateStr =
     pick(row, ["Transactiedatum", "Boekdatum", "Datum"]) || "";
   const date = parseDate(dateStr);
-  const counterparty =
-    pick(row, ["Tegenrekeninghouder", "Naam tegenrekening", "Tegenpartij", "Naam"]) ||
-    pick(row, ["Adres"]) ||
-    "";
+  // counterpartyName = uitsluitend de Tegenrekeninghouder-kolom (voor strikte regels).
+  // counterparty = wat we tonen; valt terug op Adres voor pinbetalingen zonder naam.
+  const counterpartyName =
+    pick(row, ["Tegenrekeninghouder", "Naam tegenrekening", "Tegenpartij", "Naam"]) || "";
+  const address = pick(row, ["Adres"]) || "";
+  const counterparty = counterpartyName || address || "";
   const description =
     pick(row, ["Omschrijving", "Mededelingen", "Mededeling", "Description"]) || "";
-  const address = pick(row, ["Adres"]) || "";
   const reference = pick(row, ["Referentie", "Transactiereferentie"]) || "";
   const method = pick(row, ["Betaalwijze", "Type betaling", "Type"]) || "";
   let amount = parseAmount(pick(row, ["Bedrag", "Transactiebedrag", "Amount"]));
@@ -299,6 +301,7 @@ function normalizeRow(row) {
   return {
     date,
     counterparty,
+    counterpartyName,
     description,
     address,
     reference,
@@ -312,10 +315,13 @@ function normalizeRow(row) {
 
 // ---------- Categorisatie ----------
 function categorize(tx) {
+  const counterpartyOnly = (tx.counterpartyName || "").toLowerCase();
   const hay = `${tx.counterparty} ${tx.description} ${tx.address} ${tx.reference} ${tx.method}`.toLowerCase();
   for (const rule of RULES) {
+    const target = rule.scope === "counterparty" ? counterpartyOnly : hay;
+    if (!target) continue;
     for (const m of rule.match) {
-      if (m instanceof RegExp ? m.test(hay) : hay.includes(String(m).toLowerCase())) {
+      if (m instanceof RegExp ? m.test(target) : target.includes(String(m).toLowerCase())) {
         return { category: rule.category, excluded: !!rule.excluded };
       }
     }
