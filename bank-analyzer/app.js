@@ -47,28 +47,43 @@ function detectDelimiter(line) {
 function parseCsv(text) {
   // strip BOM
   if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
-  const lines = text.split(/\r?\n/).filter((l) => l.length > 0);
-  if (lines.length === 0) return { headers: [], rows: [] };
 
-  // Knab voegt een meta-/preamble-regel toe; vind de eerste regel met >=5 kolommen
-  // die een datumkolom bevat.
-  let headerIdx = 0;
-  let delim = detectDelimiter(lines[0]);
-  for (let i = 0; i < Math.min(lines.length, 5); i++) {
-    const d = detectDelimiter(lines[i]);
-    const fields = splitCsvLine(lines[i], d);
-    if (fields.length >= 5 && fields.some((f) => /datum/i.test(f))) {
-      headerIdx = i;
-      delim = d;
-      break;
+  // Stap 1: alle records uit de tekst halen (quoted newlines respecteren).
+  // We proberen voor de eerste paar niet-lege regels welke delimiter wint.
+  const firstLines = text.split(/\r?\n/, 6).filter((l) => l.length > 0);
+  if (firstLines.length === 0) return { headers: [], rows: [] };
+  const candidates = [";", ",", "\t", "|"];
+  let delim = ";";
+  let bestScore = -1;
+  for (const d of candidates) {
+    // score = aantal velden in eerste header-achtige regel
+    for (const line of firstLines) {
+      const fields = splitOneLine(line, d);
+      if (fields.length >= 5 && fields.some((f) => /datum/i.test(f))) {
+        if (fields.length > bestScore) { bestScore = fields.length; delim = d; }
+        break;
+      }
     }
   }
+  if (bestScore < 0) {
+    // fallback: meest voorkomende delimiter in regel 1
+    delim = detectDelimiter(firstLines[0]);
+  }
 
-  const headers = splitCsvLine(lines[headerIdx], delim).map((h) => h.trim());
+  const records = parseRecords(text, delim);
+  if (records.length === 0) return { headers: [], rows: [] };
+
+  // Stap 2: vind de header-record (rij met "datum" erin)
+  let headerIdx = 0;
+  for (let i = 0; i < Math.min(records.length, 6); i++) {
+    if (records[i].some((f) => /datum/i.test(f))) { headerIdx = i; break; }
+  }
+  const headers = records[headerIdx].map((h) => h.trim());
   const rows = [];
-  for (let i = headerIdx + 1; i < lines.length; i++) {
-    const fields = splitCsvLine(lines[i], delim);
+  for (let i = headerIdx + 1; i < records.length; i++) {
+    const fields = records[i];
     if (fields.length === 1 && fields[0].trim() === "") continue;
+    if (fields.every((f) => f.trim() === "")) continue;
     const row = {};
     for (let c = 0; c < headers.length; c++) {
       row[headers[c]] = (fields[c] ?? "").trim();
@@ -78,33 +93,65 @@ function parseCsv(text) {
   return { headers, rows };
 }
 
-function splitCsvLine(line, delim) {
+// Splitst een enkele regel (geen multi-line ondersteuning, alleen voor delimiter-detectie)
+function splitOneLine(line, delim) {
   const out = [];
   let cur = "";
-  let inQuotes = false;
+  let inQ = false;
   for (let i = 0; i < line.length; i++) {
     const c = line[i];
-    if (inQuotes) {
+    if (inQ) {
       if (c === '"') {
-        if (line[i + 1] === '"') {
-          cur += '"';
-          i++;
-        } else {
-          inQuotes = false;
-        }
-      } else {
-        cur += c;
-      }
-    } else {
-      if (c === '"') inQuotes = true;
-      else if (c === delim) {
-        out.push(cur);
-        cur = "";
+        if (line[i + 1] === '"') { cur += '"'; i++; }
+        else inQ = false;
       } else cur += c;
+    } else {
+      if (c === '"') inQ = true;
+      else if (c === delim) { out.push(cur); cur = ""; }
+      else cur += c;
     }
   }
   out.push(cur);
   return out;
+}
+
+// Volledige CSV-parser die quoted newlines correct afhandelt.
+function parseRecords(text, delim) {
+  const records = [];
+  let cur = "";
+  let row = [];
+  let inQ = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQ) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { cur += '"'; i++; }
+        else inQ = false;
+      } else {
+        cur += c;
+      }
+    } else {
+      if (c === '"') {
+        inQ = true;
+      } else if (c === delim) {
+        row.push(cur); cur = "";
+      } else if (c === "\n" || c === "\r") {
+        // \r\n: skip de volgende \n
+        if (c === "\r" && text[i + 1] === "\n") i++;
+        row.push(cur); cur = "";
+        records.push(row);
+        row = [];
+      } else {
+        cur += c;
+      }
+    }
+  }
+  // laatste veld/rij
+  if (cur.length > 0 || row.length > 0) {
+    row.push(cur);
+    records.push(row);
+  }
+  return records;
 }
 
 // ---------- Veld-mapping ----------
@@ -146,14 +193,24 @@ function parseAmount(s) {
   if (!str) return NaN;
   // verwijder valuta tekens en spaties
   str = str.replace(/[€\s]/g, "");
-  // Als er zowel . als , in zit: . = duizendtal, , = decimaal
+  // trailing minus (boekhoud-formaat: "12,34-")
+  let trailingNeg = false;
+  if (/-$/.test(str)) { trailingNeg = true; str = str.slice(0, -1); }
+  // leading plus
+  if (str.startsWith("+")) str = str.slice(1);
+  // Als er zowel . als , in zit: laatste teken is decimaal
   if (str.includes(",") && str.includes(".")) {
-    str = str.replace(/\./g, "").replace(",", ".");
+    if (str.lastIndexOf(",") > str.lastIndexOf(".")) {
+      str = str.replace(/\./g, "").replace(",", ".");
+    } else {
+      str = str.replace(/,/g, "");
+    }
   } else if (str.includes(",")) {
     str = str.replace(",", ".");
   }
   const n = parseFloat(str);
-  return isNaN(n) ? NaN : n;
+  if (isNaN(n)) return NaN;
+  return trailingNeg ? -n : n;
 }
 
 function normalizeRow(row) {
@@ -389,6 +446,7 @@ async function readFiles(fileList) {
   try {
     const txs = [];
     let parsed = 0, skipped = 0, totalRows = 0;
+    const skipSamples = [];
     for (const f of fileList) {
       setStatus(`Inlezen ${f.name}...`);
       const text = await readAsText(f);
@@ -397,10 +455,21 @@ async function readFiles(fileList) {
       console.log(`[${f.name}] headers:`, headers, "rijen:", rows.length);
       for (const r of rows) {
         const tx = normalizeRow(r);
-        if (!tx.date || isNaN(tx.amount)) { skipped++; continue; }
+        const reasons = [];
+        if (!tx.date) reasons.push("geen datum");
+        if (isNaN(tx.amount)) reasons.push("geen bedrag");
+        if (reasons.length) {
+          skipped++;
+          if (skipSamples.length < 10) skipSamples.push({ reasons, row: r });
+          continue;
+        }
         txs.push(tx);
         parsed++;
       }
+    }
+    if (skipSamples.length) {
+      console.warn(`Overgeslagen rijen (${skipped} totaal). Eerste ${skipSamples.length} voorbeelden:`);
+      for (const s of skipSamples) console.warn(s.reasons.join(", "), s.row);
     }
     if (parsed === 0) {
       setStatus(
