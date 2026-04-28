@@ -227,11 +227,19 @@ function normalizeRow(row) {
     pick(row, ["Omschrijving", "Mededelingen", "Mededeling", "Description"]) || "";
   const method = pick(row, ["Betaalwijze", "Type betaling", "Type"]) || "";
   let amount = parseAmount(pick(row, ["Bedrag", "Transactiebedrag", "Amount"]));
-  const cd = (pick(row, ["CreditDebet", "Af Bij", "Af/Bij", "Debet/Credit"]) || "").toLowerCase();
+  // CreditDebet: C = Credit (inkomst, +), D = Debit (uitgave, -). Strikt toepassen.
+  const cdRaw = (pick(row, ["CreditDebet", "Credit/Debet", "Af Bij", "Af/Bij", "Debet/Credit"]) || "").trim().toUpperCase();
+  let cdKnown = true;
   if (!isNaN(amount)) {
-    if (/^d/.test(cd) || /^af/.test(cd) || cd === "debet") amount = -Math.abs(amount);
-    else if (/^c/.test(cd) || /^bij/.test(cd) || cd === "credit") amount = Math.abs(amount);
-    // anders: laat het teken zoals het is (sommige exports hebben al een teken)
+    const abs = Math.abs(amount);
+    if (cdRaw === "C" || cdRaw === "CREDIT" || cdRaw === "BIJ") {
+      amount = abs;
+    } else if (cdRaw === "D" || cdRaw === "DEBET" || cdRaw === "DEBIT" || cdRaw === "AF") {
+      amount = -abs;
+    } else {
+      cdKnown = false;
+      if (cdRaw !== "") console.warn("Onbekende CreditDebet waarde:", cdRaw, row);
+    }
   }
   return {
     date,
@@ -239,6 +247,8 @@ function normalizeRow(row) {
     description,
     method,
     amount,
+    creditDebet: cdRaw,
+    cdKnown,
     raw: row,
   };
 }
@@ -363,6 +373,10 @@ function renderTransactions(transactions) {
   for (const tx of sorted) {
     const tr = el("tr");
     tr.appendChild(el("td", { text: tx.date ? fmtDate.format(tx.date) : "?" }));
+    const cdCell = el("td", { text: tx.creditDebet || "?" });
+    if (tx.creditDebet === "C") cdCell.className = "pos";
+    else if (tx.creditDebet === "D") cdCell.className = "neg";
+    tr.appendChild(cdCell);
     tr.appendChild(el("td", { text: tx.counterparty || "-" }));
     tr.appendChild(el("td", { text: tx.description || "" }));
     tr.appendChild(el("td", { text: tx.category }));
