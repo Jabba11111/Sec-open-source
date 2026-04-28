@@ -373,23 +373,48 @@ function processTransactions(transactions) {
   document.getElementById("results").hidden = false;
 }
 
+function readAsText(file) {
+  // file.text() bestaat niet overal; FileReader werkt ook op file:// in oudere browsers
+  if (typeof file.text === "function") return file.text();
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result || ""));
+    r.onerror = () => reject(r.error || new Error("Kon bestand niet lezen"));
+    r.readAsText(file, "utf-8");
+  });
+}
+
 async function readFiles(fileList) {
   const setStatus = (s) => (document.getElementById("status").textContent = s);
-  const txs = [];
-  let parsed = 0, skipped = 0;
-  for (const f of fileList) {
-    setStatus(`Inlezen ${f.name}...`);
-    const text = await f.text();
-    const { rows } = parseCsv(text);
-    for (const r of rows) {
-      const tx = normalizeRow(r);
-      if (!tx.date || isNaN(tx.amount)) { skipped++; continue; }
-      txs.push(tx);
-      parsed++;
+  try {
+    const txs = [];
+    let parsed = 0, skipped = 0, totalRows = 0;
+    for (const f of fileList) {
+      setStatus(`Inlezen ${f.name}...`);
+      const text = await readAsText(f);
+      const { headers, rows } = parseCsv(text);
+      totalRows += rows.length;
+      console.log(`[${f.name}] headers:`, headers, "rijen:", rows.length);
+      for (const r of rows) {
+        const tx = normalizeRow(r);
+        if (!tx.date || isNaN(tx.amount)) { skipped++; continue; }
+        txs.push(tx);
+        parsed++;
+      }
     }
+    if (parsed === 0) {
+      setStatus(
+        `Geen boekingen herkend (${totalRows} CSV-rijen gevonden). ` +
+        `Controleer of het Knab CSV-formaat is. Open de console (F12) voor details.`
+      );
+      return;
+    }
+    setStatus(`${parsed} boekingen ingelezen${skipped ? `, ${skipped} overgeslagen` : ""}.`);
+    processTransactions(txs);
+  } catch (err) {
+    console.error(err);
+    setStatus(`Fout bij inlezen: ${err && err.message ? err.message : err}`);
   }
-  setStatus(`${parsed} boekingen ingelezen${skipped ? `, ${skipped} overgeslagen` : ""}.`);
-  processTransactions(txs);
 }
 
 // ---------- Demo data ----------
