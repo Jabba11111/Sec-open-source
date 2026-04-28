@@ -217,14 +217,14 @@ function normalizeRow(row) {
   const dateStr =
     pick(row, ["Transactiedatum", "Boekdatum", "Datum"]) || "";
   const date = parseDate(dateStr);
-  const counterparty = pick(row, [
-    "Tegenrekeninghouder",
-    "Naam tegenrekening",
-    "Tegenpartij",
-    "Naam",
-  ]);
+  const counterparty =
+    pick(row, ["Tegenrekeninghouder", "Naam tegenrekening", "Tegenpartij", "Naam"]) ||
+    pick(row, ["Adres"]) ||
+    "";
   const description =
     pick(row, ["Omschrijving", "Mededelingen", "Mededeling", "Description"]) || "";
+  const address = pick(row, ["Adres"]) || "";
+  const reference = pick(row, ["Referentie", "Transactiereferentie"]) || "";
   const method = pick(row, ["Betaalwijze", "Type betaling", "Type"]) || "";
   let amount = parseAmount(pick(row, ["Bedrag", "Transactiebedrag", "Amount"]));
   // CreditDebet: C = Credit (inkomst, +), D = Debit (uitgave, -). Strikt toepassen.
@@ -245,6 +245,8 @@ function normalizeRow(row) {
     date,
     counterparty,
     description,
+    address,
+    reference,
     method,
     amount,
     creditDebet: cdRaw,
@@ -255,7 +257,7 @@ function normalizeRow(row) {
 
 // ---------- Categorisatie ----------
 function categorize(tx) {
-  const hay = `${tx.counterparty} ${tx.description} ${tx.method}`.toLowerCase();
+  const hay = `${tx.counterparty} ${tx.description} ${tx.address} ${tx.reference} ${tx.method}`.toLowerCase();
   for (const rule of RULES) {
     for (const m of rule.match) {
       if (m instanceof RegExp ? m.test(hay) : hay.includes(String(m).toLowerCase())) {
@@ -422,7 +424,7 @@ function applyFilters() {
     if (type === "in" && tx.amount < 0) return false;
     if (type === "out" && tx.amount >= 0) return false;
     if (q) {
-      const hay = `${tx.counterparty} ${tx.description}`.toLowerCase();
+      const hay = `${tx.counterparty} ${tx.description} ${tx.address} ${tx.reference}`.toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;
