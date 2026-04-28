@@ -71,26 +71,66 @@ function parseCsv(text) {
   }
 
   const records = parseRecords(text, delim);
-  if (records.length === 0) return { headers: [], rows: [] };
+  return recordsToRows(records);
+}
 
-  // Stap 2: vind de header-record (rij met "datum" erin)
+// Zet een 2D-array (records) om in {headers, rows} - hergebruikt door CSV en XLSX.
+function recordsToRows(records) {
+  if (records.length === 0) return { headers: [], rows: [] };
   let headerIdx = 0;
   for (let i = 0; i < Math.min(records.length, 6); i++) {
-    if (records[i].some((f) => /datum/i.test(f))) { headerIdx = i; break; }
+    if (records[i].some((f) => /datum/i.test(String(f)))) { headerIdx = i; break; }
   }
-  const headers = records[headerIdx].map((h) => h.trim());
+  const headers = records[headerIdx].map((h) => String(h ?? "").trim());
   const rows = [];
   for (let i = headerIdx + 1; i < records.length; i++) {
-    const fields = records[i];
-    if (fields.length === 1 && fields[0].trim() === "") continue;
-    if (fields.every((f) => f.trim() === "")) continue;
+    const fields = records[i] || [];
+    const allEmpty = fields.every((f) => String(f ?? "").trim() === "");
+    if (allEmpty) continue;
     const row = {};
     for (let c = 0; c < headers.length; c++) {
-      row[headers[c]] = (fields[c] ?? "").trim();
+      const v = fields[c];
+      // Date-objecten (uit XLSX) doorgeven als ISO-string voor consistente downstream parsing
+      if (v instanceof Date && !isNaN(v)) {
+        const y = v.getFullYear();
+        const mo = String(v.getMonth() + 1).padStart(2, "0");
+        const d = String(v.getDate()).padStart(2, "0");
+        row[headers[c]] = `${y}-${mo}-${d}`;
+      } else {
+        row[headers[c]] = String(v ?? "").trim();
+      }
     }
     rows.push(row);
   }
   return { headers, rows };
+}
+
+// Lees een XLSX/XLS-bestand met SheetJS en geef hetzelfde {headers, rows}-formaat terug.
+async function parseXlsx(file) {
+  if (typeof XLSX === "undefined") {
+    throw new Error("XLSX bibliotheek niet geladen (controleer internetverbinding).");
+  }
+  const buf = await readAsBuffer(file);
+  const wb = XLSX.read(buf, { type: "array", cellDates: true });
+  const sheetName = wb.SheetNames[0];
+  const sheet = wb.Sheets[sheetName];
+  const aoa = XLSX.utils.sheet_to_json(sheet, {
+    header: 1,
+    defval: "",
+    raw: true, // hou Date-objecten en getallen intact; we converteren in recordsToRows
+    blankrows: false,
+  });
+  return recordsToRows(aoa);
+}
+
+function readAsBuffer(file) {
+  if (typeof file.arrayBuffer === "function") return file.arrayBuffer();
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(r.error || new Error("Kon bestand niet lezen"));
+    r.readAsArrayBuffer(file);
+  });
 }
 
 // Splitst een enkele regel (geen multi-line ondersteuning, alleen voor delimiter-detectie)
@@ -171,20 +211,28 @@ function pick(row, candidates) {
   return "";
 }
 
+function makeDate(y, mo, d) {
+  if (!y || !mo || !d || mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  const dt = new Date(y, mo - 1, d);
+  return isNaN(dt) ? null : dt;
+}
+
 function parseDate(s) {
-  if (!s) return null;
-  // Knab: yyyy-mm-dd of dd-mm-yyyy
-  let m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (m) return new Date(`${m[1]}-${m[2]}-${m[3]}T00:00:00`);
-  m = s.match(/^(\d{2})-(\d{2})-(\d{4})/);
-  if (m) return new Date(`${m[3]}-${m[2]}-${m[1]}T00:00:00`);
-  m = s.match(/^(\d{8})$/);
-  if (m) {
-    const y = m[1].slice(0, 4), mo = m[1].slice(4, 6), d = m[1].slice(6, 8);
-    return new Date(`${y}-${mo}-${d}T00:00:00`);
-  }
-  const d = new Date(s);
-  return isNaN(d) ? null : d;
+  if (s == null) return null;
+  if (s instanceof Date) return isNaN(s) ? null : s;
+  const str = String(s).trim();
+  if (!str) return null;
+  // ISO: yyyy-m-d  /  yyyy/m/d
+  let m = str.match(/^(\d{4})[\-\/](\d{1,2})[\-\/](\d{1,2})/);
+  if (m) return makeDate(+m[1], +m[2], +m[3]);
+  // Nederlands: d-m-yyyy  /  d/m/yyyy  (1- of 2-cijferige dag/maand)
+  m = str.match(/^(\d{1,2})[\-\/](\d{1,2})[\-\/](\d{4})/);
+  if (m) return makeDate(+m[3], +m[2], +m[1]);
+  // 8-cijferig yyyymmdd
+  m = str.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (m) return makeDate(+m[1], +m[2], +m[3]);
+  // Geen vage Date()-fallback - die interpreteert "17-4-2026" verschillend per browser.
+  return null;
 }
 
 function parseAmount(s) {
@@ -465,8 +513,14 @@ async function readFiles(fileList) {
     const skipSamples = [];
     for (const f of fileList) {
       setStatus(`Inlezen ${f.name}...`);
-      const text = await readAsText(f);
-      const { headers, rows } = parseCsv(text);
+      const isXlsx = /\.(xlsx|xls)$/i.test(f.name);
+      let headers, rows;
+      if (isXlsx) {
+        ({ headers, rows } = await parseXlsx(f));
+      } else {
+        const text = await readAsText(f);
+        ({ headers, rows } = parseCsv(text));
+      }
       totalRows += rows.length;
       console.log(`[${f.name}] headers:`, headers, "rijen:", rows.length);
       for (const r of rows) {
