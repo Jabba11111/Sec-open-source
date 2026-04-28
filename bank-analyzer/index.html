@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="nl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Knab CSV Analyzer</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Knab CSV Analyzer</h1>
+      <p class="sub">
+        Lees een Knab CSV-export in om inkomsten en uitgaven per maand te zien.
+        Alle verwerking gebeurt lokaal in je browser - er wordt niets verzonden.
+      </p>
+    </header>
+
+    <section class="upload">
+      <label class="file-input">
+        <input id="fileInput" type="file" accept=".csv,text/csv" multiple />
+        <span>Kies een of meer Knab CSV-bestanden</span>
+      </label>
+      <button id="demoBtn" type="button">Voorbeeld laden</button>
+      <button id="resetBtn" type="button">Wissen</button>
+      <p id="status" class="status"></p>
+    </section>
+
+    <section id="results" hidden>
+      <h2>Totalen</h2>
+      <div class="totals" id="totals"></div>
+
+      <h2>Per maand</h2>
+      <div class="table-wrap">
+        <table id="monthlyTable">
+          <thead>
+            <tr>
+              <th>Maand</th>
+              <th class="num">Inkomsten</th>
+              <th class="num">Uitgaven</th>
+              <th class="num">Saldo</th>
+              <th class="num">#</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <h2>Per categorie</h2>
+      <div class="table-wrap">
+        <table id="categoryTable">
+          <thead>
+            <tr>
+              <th>Categorie</th>
+              <th class="num">Inkomsten</th>
+              <th class="num">Uitgaven</th>
+              <th class="num">Netto</th>
+              <th class="num">#</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <h2>Boekingen</h2>
+      <div class="filters">
+        <input id="searchInput" type="search" placeholder="Zoek op tegenpartij of omschrijving" />
+        <select id="monthFilter"><option value="">Alle maanden</option></select>
+        <select id="categoryFilter"><option value="">Alle categorieen</option></select>
+        <select id="typeFilter">
+          <option value="">In + uit</option>
+          <option value="in">Alleen inkomsten</option>
+          <option value="out">Alleen uitgaven</option>
+        </select>
+      </div>
+      <div class="table-wrap">
+        <table id="txTable">
+          <thead>
+            <tr>
+              <th>Datum</th>
+              <th>Tegenpartij</th>
+              <th>Omschrijving</th>
+              <th>Categorie</th>
+              <th class="num">Bedrag</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="muted" id="rowCount"></p>
+    </section>
+
+    <footer>
+      <p class="muted">
+        Categorieen worden bepaald op basis van regels in <code>app.js</code>.
+        Pas de lijst <code>RULES</code> aan om je eigen labels toe te voegen.
+      </p>
+    </footer>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
