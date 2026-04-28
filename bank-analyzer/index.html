@@ -61,6 +61,47 @@
         </table>
       </div>
 
+      <section id="excludedSection" hidden>
+        <h2>Privé / Intern (uitgesloten van totalen)</h2>
+        <p class="muted">
+          Deze boekingen tellen niet mee in inkomsten/uitgaven hierboven.
+          Pas de regels aan in <code>RULES</code> in <code>app.js</code> om de selectie te wijzigen.
+        </p>
+        <div class="totals" id="excludedTotals"></div>
+
+        <h3>Privé per categorie</h3>
+        <div class="table-wrap">
+          <table id="excludedCategoryTable">
+            <thead>
+              <tr>
+                <th>Categorie</th>
+                <th class="num">In</th>
+                <th class="num">Uit</th>
+                <th class="num">Netto</th>
+                <th class="num">#</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <h3>Privé per maand</h3>
+        <div class="table-wrap">
+          <table id="excludedMonthlyTable">
+            <thead>
+              <tr>
+                <th>Maand</th>
+                <th class="num">In</th>
+                <th class="num">Uit</th>
+                <th class="num">Netto</th>
+                <th class="num">#</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
       <h2>Boekingen</h2>
       <div class="filters">
         <input id="searchInput" type="search" placeholder="Zoek op tegenpartij of omschrijving" />
@@ -71,6 +112,10 @@
           <option value="in">Alleen inkomsten</option>
           <option value="out">Alleen uitgaven</option>
         </select>
+        <label class="check">
+          <input id="excludedFilter" type="checkbox" checked />
+          <span>Toon ook uitgesloten privé-boekingen</span>
+        </label>
       </div>
       <div class="table-wrap">
         <table id="txTable">

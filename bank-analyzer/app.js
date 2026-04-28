@@ -2,10 +2,17 @@
 // and aggregates per month / category. Runs entirely in the browser.
 
 // ---------- Categorisatie regels ----------
-// Elke regel: { category, match: [strings of regexes] }
-// Match wordt gedaan tegen tegenpartij + omschrijving + betaalwijze (lowercase).
+// Elke regel: { category, match: [strings of regexes], excluded? }
+// Match wordt gedaan tegen tegenpartij + omschrijving + adres + referentie + betaalwijze (lowercase).
 // Eerste match wint, daarom specifiekere regels eerst.
+// excluded:true = persoonlijke onttrekking / intern betaalverkeer; telt NIET mee in
+// inkomsten/uitgaven/netto/per maand/per categorie. Wordt apart getoond.
 const RULES = [
+  // --- Uitgesloten van totalen (privé / intern) ---
+  { category: "Privé - D Bouma",         excluded: true, match: [/\bd\.?\s*bouma\b/] },
+  { category: "Privé - Sentis Psychologen", excluded: true, match: [/sentis\s*psychologen/] },
+
+  // --- Reguliere categorieen ---
   { category: "Salaris",       match: [/salaris/, /loon/, /payroll/] },
   { category: "Belasting",     match: [/belastingdienst/, /\bbtw\b/, /aangifte/] },
   { category: "Toeslagen",     match: [/toeslag/] },
@@ -309,11 +316,14 @@ function categorize(tx) {
   for (const rule of RULES) {
     for (const m of rule.match) {
       if (m instanceof RegExp ? m.test(hay) : hay.includes(String(m).toLowerCase())) {
-        return rule.category;
+        return { category: rule.category, excluded: !!rule.excluded };
       }
     }
   }
-  return tx.amount >= 0 ? DEFAULT_INCOME_CATEGORY : DEFAULT_EXPENSE_CATEGORY;
+  return {
+    category: tx.amount >= 0 ? DEFAULT_INCOME_CATEGORY : DEFAULT_EXPENSE_CATEGORY,
+    excluded: false,
+  };
 }
 
 // ---------- Aggregaties ----------
@@ -326,11 +336,32 @@ function ymKey(d) {
 function aggregate(transactions) {
   const monthly = new Map();
   const byCategory = new Map();
-  let totalIn = 0, totalOut = 0;
+  const excludedMonthly = new Map();
+  const excludedByCategory = new Map();
+  let totalIn = 0, totalOut = 0, includedCount = 0;
+  let exclIn = 0, exclOut = 0, excludedCount = 0;
 
   for (const tx of transactions) {
     if (!tx.date || isNaN(tx.amount)) continue;
     const key = ymKey(tx.date);
+
+    if (tx.excluded) {
+      excludedCount++;
+      if (!excludedMonthly.has(key)) excludedMonthly.set(key, { month: key, income: 0, expense: 0, count: 0 });
+      const em = excludedMonthly.get(key);
+      em.count++;
+      if (tx.amount >= 0) { em.income += tx.amount; exclIn += tx.amount; }
+      else { em.expense += -tx.amount; exclOut += -tx.amount; }
+      const cat = tx.category;
+      if (!excludedByCategory.has(cat)) excludedByCategory.set(cat, { category: cat, income: 0, expense: 0, count: 0 });
+      const ec = excludedByCategory.get(cat);
+      ec.count++;
+      if (tx.amount >= 0) ec.income += tx.amount;
+      else ec.expense += -tx.amount;
+      continue;
+    }
+
+    includedCount++;
     if (!monthly.has(key)) monthly.set(key, { month: key, income: 0, expense: 0, count: 0 });
     const mo = monthly.get(key);
     mo.count++;
@@ -347,6 +378,9 @@ function aggregate(transactions) {
 
   return {
     monthly: [...monthly.values()].sort((a, b) => a.month.localeCompare(b.month)),
+    excludedMonthly: [...excludedMonthly.values()].sort((a, b) => a.month.localeCompare(b.month)),
+    excludedByCategory: [...excludedByCategory.values()].sort((a, b) => (b.expense + b.income) - (a.expense + a.income)),
+    exclIn, exclOut, excludedCount, includedCount,
     byCategory: [...byCategory.values()].sort((a, b) => (b.expense - b.income) - (a.expense - a.income)),
     totalIn, totalOut,
     count: transactions.length,
@@ -376,13 +410,73 @@ function renderTotals(agg) {
     { label: "Inkomsten",   value: fmtEur.format(agg.totalIn), cls: "pos" },
     { label: "Uitgaven",    value: fmtEur.format(agg.totalOut), cls: "neg" },
     { label: "Netto saldo", value: fmtEur.format(net), cls: net >= 0 ? "pos" : "neg" },
-    { label: "Boekingen",   value: String(agg.count) },
+    { label: `Boekingen (excl. ${agg.excludedCount} privé)`, value: String(agg.includedCount) },
   ];
   for (const t of tiles) {
     const tile = el("div", { class: "tile" });
     tile.appendChild(el("div", { class: "label", text: t.label }));
     tile.appendChild(el("div", { class: `value ${t.cls || ""}`, text: t.value }));
     root.appendChild(tile);
+  }
+}
+
+function renderExcluded(agg) {
+  const section = document.getElementById("excludedSection");
+  if (!agg.excludedCount) {
+    if (section) section.hidden = true;
+    return;
+  }
+  if (section) section.hidden = false;
+
+  // Tegels: in/uit/netto privé
+  const tilesRoot = document.getElementById("excludedTotals");
+  if (tilesRoot) {
+    tilesRoot.innerHTML = "";
+    const net = agg.exclIn - agg.exclOut;
+    const tiles = [
+      { label: "Privé in",     value: fmtEur.format(agg.exclIn),  cls: "pos" },
+      { label: "Privé uit",    value: fmtEur.format(agg.exclOut), cls: "neg" },
+      { label: "Privé netto",  value: fmtEur.format(net), cls: net >= 0 ? "pos" : "neg" },
+      { label: "Boekingen",    value: String(agg.excludedCount) },
+    ];
+    for (const t of tiles) {
+      const tile = el("div", { class: "tile" });
+      tile.appendChild(el("div", { class: "label", text: t.label }));
+      tile.appendChild(el("div", { class: `value ${t.cls || ""}`, text: t.value }));
+      tilesRoot.appendChild(tile);
+    }
+  }
+
+  // Per maand
+  const mtbody = document.querySelector("#excludedMonthlyTable tbody");
+  if (mtbody) {
+    mtbody.innerHTML = "";
+    for (const m of agg.excludedMonthly) {
+      const tr = el("tr");
+      const net = m.income - m.expense;
+      tr.appendChild(el("td", { text: m.month }));
+      tr.appendChild(el("td", { class: "num pos", text: fmtEur.format(m.income) }));
+      tr.appendChild(el("td", { class: "num neg", text: fmtEur.format(m.expense) }));
+      tr.appendChild(el("td", { class: `num ${net >= 0 ? "pos" : "neg"}`, text: fmtEur.format(net) }));
+      tr.appendChild(el("td", { class: "num", text: String(m.count) }));
+      mtbody.appendChild(tr);
+    }
+  }
+
+  // Per categorie (D Bouma vs Sentis)
+  const ctbody = document.querySelector("#excludedCategoryTable tbody");
+  if (ctbody) {
+    ctbody.innerHTML = "";
+    for (const c of agg.excludedByCategory) {
+      const tr = el("tr");
+      const net = c.income - c.expense;
+      tr.appendChild(el("td", { text: c.category }));
+      tr.appendChild(el("td", { class: "num pos", text: fmtEur.format(c.income) }));
+      tr.appendChild(el("td", { class: "num neg", text: fmtEur.format(c.expense) }));
+      tr.appendChild(el("td", { class: `num ${net >= 0 ? "pos" : "neg"}`, text: fmtEur.format(net) }));
+      tr.appendChild(el("td", { class: "num", text: String(c.count) }));
+      ctbody.appendChild(tr);
+    }
   }
 }
 
@@ -421,7 +515,7 @@ function renderTransactions(transactions) {
   tbody.innerHTML = "";
   const sorted = [...transactions].sort((a, b) => (b.date?.getTime() || 0) - (a.date?.getTime() || 0));
   for (const tx of sorted) {
-    const tr = el("tr");
+    const tr = el("tr", { class: tx.excluded ? "excluded" : "" });
     tr.appendChild(el("td", { text: tx.date ? fmtDate.format(tx.date) : "?" }));
     const cdCell = el("td", { text: tx.creditDebet || "?" });
     if (tx.creditDebet === "C") cdCell.className = "pos";
@@ -429,7 +523,13 @@ function renderTransactions(transactions) {
     tr.appendChild(cdCell);
     tr.appendChild(el("td", { text: tx.counterparty || "-" }));
     tr.appendChild(el("td", { text: tx.description || "" }));
-    tr.appendChild(el("td", { text: tx.category }));
+    const catCell = el("td", { text: tx.category });
+    if (tx.excluded) {
+      const badge = el("span", { class: "badge", text: "uitgesloten" });
+      catCell.appendChild(document.createTextNode(" "));
+      catCell.appendChild(badge);
+    }
+    tr.appendChild(catCell);
     const cls = tx.amount >= 0 ? "pos" : "neg";
     tr.appendChild(el("td", { class: `num ${cls}`, text: fmtEur.format(tx.amount) }));
     tbody.appendChild(tr);
@@ -466,7 +566,9 @@ function applyFilters() {
   const cat = document.getElementById("categoryFilter").value;
   const type = document.getElementById("typeFilter").value;
 
+  const showExcluded = document.getElementById("excludedFilter")?.checked ?? true;
   const filtered = allTransactions.filter((tx) => {
+    if (!showExcluded && tx.excluded) return false;
     if (month && (!tx.date || ymKey(tx.date) !== month)) return false;
     if (cat && tx.category !== cat) return false;
     if (type === "in" && tx.amount < 0) return false;
@@ -481,13 +583,18 @@ function applyFilters() {
 }
 
 function processTransactions(transactions) {
-  for (const tx of transactions) tx.category = categorize(tx);
+  for (const tx of transactions) {
+    const r = categorize(tx);
+    tx.category = r.category;
+    tx.excluded = r.excluded;
+  }
   allTransactions = transactions;
   const agg = aggregate(transactions);
 
   renderTotals(agg);
   renderMonthly(agg);
   renderCategories(agg);
+  renderExcluded(agg);
   populateFilters(transactions);
   renderTransactions(transactions);
 
@@ -595,7 +702,9 @@ document.getElementById("resetBtn").addEventListener("click", () => {
   document.getElementById("status").textContent = "";
   document.getElementById("fileInput").value = "";
 });
-for (const id of ["searchInput", "monthFilter", "categoryFilter", "typeFilter"]) {
-  document.getElementById(id).addEventListener("input", applyFilters);
-  document.getElementById(id).addEventListener("change", applyFilters);
+for (const id of ["searchInput", "monthFilter", "categoryFilter", "typeFilter", "excludedFilter"]) {
+  const elx = document.getElementById(id);
+  if (!elx) continue;
+  elx.addEventListener("input", applyFilters);
+  elx.addEventListener("change", applyFilters);
 }
