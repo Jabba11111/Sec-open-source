@@ -493,6 +493,93 @@ function renderIntern(agg, transactions) {
   renderTxIntoTable("#internTxTable tbody", transactions.filter((t) => t.kind === "intern"));
 }
 
+// Inkomsten / Uitgaven: alleen positieve resp. negatieve boekingen uit de main-groep.
+function buildSidedView(mainTxs, sign) {
+  const filtered = mainTxs.filter((t) =>
+    sign === "in" ? t.amount > 0 : t.amount < 0
+  );
+  const monthly = new Map();
+  const byCategory = new Map();
+  let total = 0;
+  for (const tx of filtered) {
+    if (!tx.date) continue;
+    const k = ymKey(tx.date);
+    const abs = Math.abs(tx.amount);
+    if (!monthly.has(k)) monthly.set(k, { month: k, amount: 0, count: 0 });
+    const mo = monthly.get(k);
+    mo.amount += abs; mo.count++;
+    if (!byCategory.has(tx.category)) byCategory.set(tx.category, { category: tx.category, amount: 0, count: 0 });
+    const ca = byCategory.get(tx.category);
+    ca.amount += abs; ca.count++;
+    total += abs;
+  }
+  return {
+    transactions: filtered,
+    monthly: [...monthly.values()].sort((a, b) => a.month.localeCompare(b.month)),
+    byCategory: [...byCategory.values()].sort((a, b) => b.amount - a.amount),
+    total,
+    count: filtered.length,
+  };
+}
+
+function renderSingleColumnMonthly(selector, rows, cls) {
+  const tbody = document.querySelector(selector);
+  if (!tbody) return;
+  tbody.innerHTML = "";
+  for (const m of rows) {
+    const tr = el("tr");
+    tr.appendChild(el("td", { text: m.month }));
+    tr.appendChild(el("td", { class: `num ${cls}`, text: fmtEur.format(m.amount) }));
+    tr.appendChild(el("td", { class: "num", text: String(m.count) }));
+    tbody.appendChild(tr);
+  }
+}
+
+function renderSingleColumnCategory(selector, rows, cls) {
+  const tbody = document.querySelector(selector);
+  if (!tbody) return;
+  tbody.innerHTML = "";
+  for (const c of rows) {
+    const tr = el("tr");
+    tr.appendChild(el("td", { text: c.category }));
+    tr.appendChild(el("td", { class: `num ${cls}`, text: fmtEur.format(c.amount) }));
+    tr.appendChild(el("td", { class: "num", text: String(c.count) }));
+    tbody.appendChild(tr);
+  }
+}
+
+function renderSidedTiles(rootId, view, label, cls) {
+  const root = document.getElementById(rootId);
+  if (!root) return;
+  root.innerHTML = "";
+  const tiles = [
+    { label: `Totaal ${label}`, value: fmtEur.format(view.total), cls },
+    { label: "Boekingen", value: String(view.count) },
+  ];
+  for (const t of tiles) {
+    const tile = el("div", { class: "tile" });
+    tile.appendChild(el("div", { class: "label", text: t.label }));
+    tile.appendChild(el("div", { class: `value ${t.cls || ""}`, text: t.value }));
+    root.appendChild(tile);
+  }
+}
+
+function renderIncome(view) {
+  document.getElementById("incomeCount").textContent = `${view.count} boekingen`;
+  renderSidedTiles("incomeTotals", view, "inkomsten", "pos");
+  renderSingleColumnMonthly("#incomeMonthlyTable tbody", view.monthly, "pos");
+  renderSingleColumnCategory("#incomeCategoryTable tbody", view.byCategory, "pos");
+  renderTxIntoTable("#incomeTxTable tbody", view.transactions);
+}
+
+function renderExpenses(view) {
+  document.getElementById("expensesCount").textContent = `${view.count} boekingen`;
+  renderSidedTiles("expensesTotals", view, "uitgaven", "neg");
+  renderSingleColumnMonthly("#expensesMonthlyTable tbody", view.monthly, "neg");
+  renderSingleColumnCategory("#expensesCategoryTable tbody", view.byCategory, "neg");
+  renderTxIntoTable("#expensesTxTable tbody", view.transactions);
+}
+
 function renderTransactions(transactions) {
   const tbody = document.querySelector("#txTable tbody");
   tbody.innerHTML = "";
@@ -566,6 +653,8 @@ function applyFilters() {
 }
 
 let lastAgg = null;
+let lastIncome = null;
+let lastExpenses = null;
 
 function processTransactions(transactions) {
   for (const tx of transactions) {
@@ -577,7 +666,13 @@ function processTransactions(transactions) {
   const agg = aggregate(transactions);
   lastAgg = agg;
 
+  const mainTxs = transactions.filter((t) => !t.kind);
+  lastIncome = buildSidedView(mainTxs, "in");
+  lastExpenses = buildSidedView(mainTxs, "out");
+
   renderOverview(agg);
+  renderIncome(lastIncome);
+  renderExpenses(lastExpenses);
   renderPrive(agg, transactions);
   renderIntern(agg, transactions);
   populateFilters(transactions);
@@ -702,6 +797,9 @@ function exportExcel() {
   ]);
   XLSX.utils.book_append_sheet(wb, overviewSheet, "Overzicht");
 
+  XLSX.utils.book_append_sheet(wb, sidedSheet(lastIncome, "Inkomsten"), "Inkomsten");
+  XLSX.utils.book_append_sheet(wb, sidedSheet(lastExpenses, "Uitgaven"), "Uitgaven");
+
   XLSX.utils.book_append_sheet(
     wb,
     txSheet(allTransactions.filter((t) => !t.kind)),
@@ -740,6 +838,40 @@ function txSheet(txs) {
   ];
   const sheet = XLSX.utils.aoa_to_sheet(aoa, { cellDates: true });
   return sheet;
+}
+
+function sidedSheet(view, label) {
+  const aoa = [
+    [`${label} - samenvatting`],
+    [],
+    [`Totaal ${label}`, view.total],
+    ["Boekingen", view.count],
+    [],
+    ["Per maand"],
+    ["Maand", label, "Aantal"],
+    ...view.monthly.map((m) => [m.month, m.amount, m.count]),
+    [],
+    ["Per categorie"],
+    ["Categorie", label, "Aantal"],
+    ...view.byCategory.map((c) => [c.category, c.amount, c.count]),
+    [],
+    ["Boekingen"],
+    ["Datum", "C/D", "Tegenpartij", "Omschrijving", "Adres", "Referentie", "Betaalwijze", "Categorie", "Bedrag"],
+    ...[...view.transactions]
+      .sort((a, b) => (b.date?.getTime() || 0) - (a.date?.getTime() || 0))
+      .map((t) => [
+        t.date || "",
+        t.creditDebet || "",
+        t.counterparty || "",
+        t.description || "",
+        t.address || "",
+        t.reference || "",
+        t.method || "",
+        t.category || "",
+        t.amount,
+      ]),
+  ];
+  return XLSX.utils.aoa_to_sheet(aoa, { cellDates: true });
 }
 
 function groupSheet(group, txs, label) {
