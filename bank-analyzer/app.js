@@ -284,24 +284,37 @@ function normalizeRow(row) {
   const reference = pick(row, ["Referentie", "Transactiereferentie"]) || "";
   const method = pick(row, ["Betaalwijze", "Type betaling", "Type"]) || "";
   let amount = parseAmount(pick(row, ["Bedrag", "Transactiebedrag", "Amount"]));
-  // CreditDebet: C = Credit (inkomst, +), D = Debit (uitgave, -). Strikt toepassen.
-  const cdRaw = (pick(row, ["CreditDebet", "Credit/Debet", "Af Bij", "Af/Bij", "Debet/Credit"]) || "").trim().toUpperCase();
-  let cd = null; // "C" of "D" na normalisatie
-  if (cdRaw === "C" || cdRaw === "CREDIT" || cdRaw === "BIJ" || cdRaw === "BS") cd = "C";
-  else if (cdRaw === "D" || cdRaw === "DEBET" || cdRaw === "DEBIT" || cdRaw === "AF" || cdRaw === "AS") cd = "D";
+  const rawAmount = amount;
+  // CreditDebet: bepaalt of het een bij- of afschrijving is.
+  const cdRaw = (pick(row, [
+    "CreditDebet", "Credit/Debet", "Credit Debet",
+    "Af Bij", "Af/Bij", "Bij/Af", "Bij Af",
+    "Debet/Credit", "Mutatiesoort", "Type mutatie", "Mutatie",
+  ]) || "").trim().toUpperCase();
 
-  // Fallback: als CreditDebet leeg/onbekend, probeer sign af te leiden uit Betaalwijze/Type betaling.
+  // Prefix-match voor maximale flexibiliteit: C, Credit, Bij, Bijschrijving, BS, IN → C
+  //                                          D, Deb, Af, Afschrijving, AS, UIT → D
+  let cd = null;
+  if (cdRaw === "C" || cdRaw === "+" || cdRaw === "BS" || cdRaw === "IN" ||
+      cdRaw.startsWith("CREDIT") || cdRaw.startsWith("BIJ")) {
+    cd = "C";
+  } else if (cdRaw === "D" || cdRaw === "-" || cdRaw === "AS" || cdRaw === "UIT" ||
+             cdRaw.startsWith("DEB") || cdRaw.startsWith("AF")) {
+    cd = "D";
+  }
+
+  // Fallback: leidt sign af uit Betaalwijze/Type betaling als CD onherkenbaar is.
+  let cdSource = cd ? "cd" : null;
   if (!cd) {
     const m = method.toLowerCase();
-    if (/\bontvangen\b|\bbijschrijving\b|\bcredit\b|\bgeldst?ort/.test(m)) cd = "C";
-    else if (/\bincasso\b|\bpin\b|\bbetaling\b|\bafschrijving\b|\bopname\b|\boverboeking\b|\bidealt?\b/.test(m)) cd = "D";
+    if (/\bontvangen\b|\bbijschrijving\b|\bcredit\b|\bgeldst?ort/.test(m)) { cd = "C"; cdSource = "method"; }
+    else if (/\bincasso\b|\bpin\b|\bbetaling\b|\bafschrijving\b|\bopname\b|\boverboeking\b|\bidealt?\b/.test(m)) { cd = "D"; cdSource = "method"; }
   }
 
   if (!isNaN(amount)) {
     const abs = Math.abs(amount);
     if (cd === "C") amount = abs;
     else if (cd === "D") amount = -abs;
-    // else: bedrag zoals geparsed - kan een sign hebben
   }
   return {
     date,
@@ -312,9 +325,10 @@ function normalizeRow(row) {
     reference,
     method,
     amount,
-    creditDebet: cd || cdRaw || "",
-    cdKnown: !!cd,
-    cdSource: cd ? (cdRaw ? "cd" : "method") : "none",
+    rawAmount,
+    creditDebet: cd || "",
+    cdRaw,
+    cdSource: cdSource || "none",
     raw: row,
   };
 }
@@ -593,7 +607,8 @@ function renderTransactions(transactions) {
   for (const tx of sorted) {
     const tr = el("tr", { class: tx.kind ? "excluded" : "" });
     tr.appendChild(el("td", { text: tx.date ? fmtDate.format(tx.date) : "?" }));
-    const cdCell = el("td", { text: tx.creditDebet || "?" });
+    const cdText = tx.creditDebet + (tx.cdRaw && tx.cdRaw !== tx.creditDebet ? ` (${tx.cdRaw})` : "");
+    const cdCell = el("td", { text: cdText || "?" });
     if (tx.creditDebet === "C") cdCell.className = "pos";
     else if (tx.creditDebet === "D") cdCell.className = "neg";
     tr.appendChild(cdCell);
@@ -606,6 +621,7 @@ function renderTransactions(transactions) {
       catCell.appendChild(badge);
     }
     tr.appendChild(catCell);
+    tr.appendChild(el("td", { class: "num muted", text: fmtEur.format(tx.rawAmount ?? tx.amount) }));
     const cls = tx.amount >= 0 ? "pos" : "neg";
     tr.appendChild(el("td", { class: `num ${cls}`, text: fmtEur.format(tx.amount) }));
     tbody.appendChild(tr);
