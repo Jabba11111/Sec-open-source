@@ -286,17 +286,22 @@ function normalizeRow(row) {
   let amount = parseAmount(pick(row, ["Bedrag", "Transactiebedrag", "Amount"]));
   // CreditDebet: C = Credit (inkomst, +), D = Debit (uitgave, -). Strikt toepassen.
   const cdRaw = (pick(row, ["CreditDebet", "Credit/Debet", "Af Bij", "Af/Bij", "Debet/Credit"]) || "").trim().toUpperCase();
-  let cdKnown = true;
+  let cd = null; // "C" of "D" na normalisatie
+  if (cdRaw === "C" || cdRaw === "CREDIT" || cdRaw === "BIJ" || cdRaw === "BS") cd = "C";
+  else if (cdRaw === "D" || cdRaw === "DEBET" || cdRaw === "DEBIT" || cdRaw === "AF" || cdRaw === "AS") cd = "D";
+
+  // Fallback: als CreditDebet leeg/onbekend, probeer sign af te leiden uit Betaalwijze/Type betaling.
+  if (!cd) {
+    const m = method.toLowerCase();
+    if (/\bontvangen\b|\bbijschrijving\b|\bcredit\b|\bgeldst?ort/.test(m)) cd = "C";
+    else if (/\bincasso\b|\bpin\b|\bbetaling\b|\bafschrijving\b|\bopname\b|\boverboeking\b|\bidealt?\b/.test(m)) cd = "D";
+  }
+
   if (!isNaN(amount)) {
     const abs = Math.abs(amount);
-    if (cdRaw === "C" || cdRaw === "CREDIT" || cdRaw === "BIJ") {
-      amount = abs;
-    } else if (cdRaw === "D" || cdRaw === "DEBET" || cdRaw === "DEBIT" || cdRaw === "AF") {
-      amount = -abs;
-    } else {
-      cdKnown = false;
-      if (cdRaw !== "") console.warn("Onbekende CreditDebet waarde:", cdRaw, row);
-    }
+    if (cd === "C") amount = abs;
+    else if (cd === "D") amount = -abs;
+    // else: bedrag zoals geparsed - kan een sign hebben
   }
   return {
     date,
@@ -307,8 +312,9 @@ function normalizeRow(row) {
     reference,
     method,
     amount,
-    creditDebet: cdRaw,
-    cdKnown,
+    creditDebet: cd || cdRaw || "",
+    cdKnown: !!cd,
+    cdSource: cd ? (cdRaw ? "cd" : "method") : "none",
     raw: row,
   };
 }
@@ -737,6 +743,35 @@ async function readFiles(fileList) {
       return;
     }
     setStatus(`${parsed} boekingen ingelezen${skipped ? `, ${skipped} overgeslagen` : ""}.`);
+
+    // Diagnostiek: hoe is het teken bepaald?
+    let nC = 0, nD = 0, nUnknown = 0, nFromMethod = 0;
+    const unknownSamples = [];
+    for (const t of txs) {
+      if (t.creditDebet === "C") nC++;
+      else if (t.creditDebet === "D") nD++;
+      else { nUnknown++; if (unknownSamples.length < 5) unknownSamples.push(t); }
+      if (t.cdSource === "method") nFromMethod++;
+    }
+    console.log(
+      `Verdeling C/D: ${nC} bijschrijvingen, ${nD} afschrijvingen` +
+      (nFromMethod ? ` (waarvan ${nFromMethod} afgeleid uit Betaalwijze)` : "") +
+      (nUnknown ? `, ${nUnknown} onbekend` : "")
+    );
+    if (unknownSamples.length) {
+      console.warn("Voorbeelden met onbekend teken:", unknownSamples.map((t) => ({
+        cdRaw: t.creditDebet, betaalwijze: t.method, tegenpartij: t.counterpartyName, bedrag: t.amount,
+      })));
+    }
+    if (nUnknown) {
+      setStatus(
+        `${parsed} boekingen ingelezen. LET OP: ${nUnknown} rijen zonder herkend C/D-teken. ` +
+        `Check console (F12) voor voorbeelden.`
+      );
+    } else {
+      setStatus(`${parsed} boekingen: ${nC} bij / ${nD} af${skipped ? `, ${skipped} overgeslagen` : ""}.`);
+    }
+
     processTransactions(txs);
   } catch (err) {
     console.error(err);
